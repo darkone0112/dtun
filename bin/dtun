@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+# dtun: SSH tunnel toolbox (systemd user units + autossh + ssh-agent)
+# MVP features:
+#   init                       -> bootstrap user agent + linger + sanity checks
+#   alias add|list|show|rm     -> manage ~/.ssh/config.d/<alias>.conf
+#   key add <alias>            -> load key into ssh-agent (from alias IdentityFile)
+#   start|stop|status|logs     -> manage tunnel@<alias>.service
+#   enable|disable             -> autostart at login
+# Requires: openssh-client, autossh, systemd user session
+
+set -euo pipefail
+
+SYSTEMCTL="systemctl --user"
+JOURNALCTL="journalctl --user"
+UNIT_PREFIX="tunnel@"
+AGENT_UNIT="ssh-agent.service"
+AGENT_SOCK="${XDG_RUNTIME_DIR:-/run/user/$UID}/ssh-agent.socket"
+DEFAULT_KEY="$HOME/.ssh/id_ed25519"
+CONF_D="$HOME/.ssh/config.d"
+MAIN_CONF="$HOME/.ssh/config"
+
+msg() { echo "dtun: $*"; }
+die() { echo "dtun: $*" >&2; exit 1; }
+
+ensure_prereqs() {
+  command -v autossh >/dev/null 2>&1 || die "autossh not found. Install it (e.g. 'sudo apt install autossh' or 'sudo pacman -S autossh')."
+  command -v ssh >/dev/null 2>&1 || die "ssh not found."
+  mkdir -p "$CONF_D"
+  touch "$MAIN_CONF"
+  if ! grep -qE '^\s*Include\s+~/.ssh/config\.d/\*' "$MAIN_CONF"; then
+    { echo ""; echo "Include ~/.ssh/config.d/*"; } >> "$MAIN_CONF"
+    msg "added Include ~/.ssh/config.d/* to $MAIN_CONF"
+  fi
+}
+
+ensure_agent_running() {
+  $SYSTEMCTL enable --now "$AGENT_UNIT" >/dev/null 2>&1 || true
+  export SSH_AUTH_SOCK="$AGENT_SOCK"
+}
+
+expand_tilde() {
+  local p="$1"
+  if [[ "$p" == "~" || "$p" == "~/"* ]]; then
+    printf '%s\n' "${p/#\~/$HOME}"
+  else
+    printf '%s\n' "$p"
+  fi
+}
+
+resolve_identityfile() {
+  local alias="$1"
+  local -a keys
+  mapfile -t keys < <(ssh -G "$alias" 2>/dev/null | awk '/^identityfile /{print $2}')
+  if [[ ${#keys[@]} -eq 0 ]]; then
+    keys=("$DEFAULT_KEY")
+  fi
+  for key in "${keys[@]}"; do
+    key="${key%\"}"; key="${key#\"}"
+    key="$(expand_tilde "$key")"
+    [[ -f "$key" ]] && { echo "$key"; return 0; }
+  done
+  echo "$(expand_tilde "$DEFAULT_KEY")"
+}
+
+load_key_for_alias() {
+  local alias="$1"
+  ensure_agent_running
+  local key; key="$(resolve_identityfile "$alias")"
+  [[ -f "$key" ]] || die "IdentityFile not found: $key (alias: $alias)"
+  ssh-add -l >/dev/null 2>&1 || true
+  ssh-add "$key"
+}
+
+alias_file() { echo "$CONF_D/$1.conf"; }
+alias_exists() { [[ -f "$(alias_file "$1")" ]]; }
+
+cmd_init() {
+  ensure_prereqs
+  $SYSTEMCTL daemon-reload
+  $SYSTEMCTL enable --now "$AGENT_UNIT"
+  loginctl enable-linger "$USER" >/dev/null 2>&1 || true
+  msg "init done (ssh-agent active, linger enabled)."
+}
+
+cmd_alias_add() {
+  local alias="" host="" user="" port="22" lhost="127.0.0.1" lport="" rhost="127.0.0.1" rport="" ident="$DEFAULT_KEY" strict="accept-new"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --alias) alias="$2"; shift 2;;
+      --host) host="$2"; shift 2;;
+      --user) user="$2"; shift 2;;
+      --port) port="$2"; shift 2;;
+      --lhost) lhost="$2"; shift 2;;
+      --lport) lport="$2"; shift 2;;
+      --rhost) rhost="$2"; shift 2;;
+      --rport) rport="$2"; shift 2;;
+      --identity|--ident|--key) ident="$2"; shift 2;;
+      --strict) strict="$2"; shift 2;;
+      *) die "unknown flag: $1";;
+    esac
+  done
+  [[ -n "$alias" && -n "$host" && -n "$user" ]] || die "alias, host, user are required"
+  [[ -n "$lport" && -n "$rport" ]] || die "lport and rport are required (e.g. --lport 3307 --rport 3306)"
+  ident="$(expand_tilde "$ident")"
+
+  local f; f="$(alias_file "$alias")"
+  if alias_exists "$alias"; then
+    die "alias already exists: $alias ($f)"
+  fi
+
+  cat >"$f" <<EOF
+Host $alias
+  HostName $host
+  User $user
+  Port $port
+  IdentityFile $ident
+  IdentitiesOnly yes
+  PreferredAuthentications publickey
+  StrictHostKeyChecking $strict
+  ServerAliveInterval 30
+  ServerAliveCountMax 3
+  ExitOnForwardFailure yes
+  LocalForward $lport $rhost:$rport
+EOF
+  chmod 600 "$f"
+  msg "alias created: $alias -> $f"
+  ssh -G "$alias" >/dev/null || die "ssh -G failed; check your alias config."
+}
+
+cmd_alias_list() {
+  ls -1 "$CONF_D"/*.conf 2>/dev/null | sed -E 's|.*/||; s|\.conf$||' || true
+}
+
+cmd_alias_show() {
+  local alias="${1:-}"; [[ -n "$alias" ]] || die "alias required"
+  local f; f="$(alias_file "$alias")"
+  [[ -f "$f" ]] || die "alias not found: $alias"
+  cat "$f"
+}
+
+cmd_alias_rm() {
+  local alias="${1:-}"; [[ -n "$alias" ]] || die "alias required"
+  local f; f="$(alias_file "$alias")"
+  [[ -f "$f" ]] || die "alias not found: $alias"
+  rm -f "$f"
+  msg "alias removed: $alias"
+}
+
+cmd_key_add() {
+  local alias="${1:-}"; [[ -n "$alias" ]] || die "alias required"
+  load_key_for_alias "$alias"
+  ssh-add -l
+}
+
+cmd_start()   { ensure_agent_running; load_key_for_alias "${1:-}"; $SYSTEMCTL start  "${UNIT_PREFIX}${1}.service"; msg "started: ${UNIT_PREFIX}${1}.service"; }
+cmd_stop()    { $SYSTEMCTL stop    "${UNIT_PREFIX}${1}.service"; msg "stopped: ${UNIT_PREFIX}${1}.service"; }
+cmd_enable()  { $SYSTEMCTL enable  "${UNIT_PREFIX}${1}.service"; msg "enabled: ${UNIT_PREFIX}${1}.service"; }
+cmd_disable() { $SYSTEMCTL disable "${UNIT_PREFIX}${1}.service"; msg "disabled: ${UNIT_PREFIX}${1}.service"; }
+cmd_status()  { $SYSTEMCTL status  "${UNIT_PREFIX}${1}.service" --no-pager; }
+cmd_logs()    { $JOURNALCTL -u     "${UNIT_PREFIX}${1}" -e --no-pager; }
+
+usage() {
+  cat <<EOF
+dtun: SSH tunnel toolbox
+
+USAGE:
+  dtun init
+  dtun alias add --alias ALIAS --host HOST --user USER --lport LPORT --rport RPORT [--port 22] [--lhost 127.0.0.1] [--rhost 127.0.0.1] [--identity PATH] [--strict accept-new]
+  dtun alias list
+  dtun alias show <ALIAS>
+  dtun alias rm <ALIAS>
+  dtun key add <ALIAS>
+  dtun start|stop|enable|disable|status|logs <ALIAS>
+
+NOTES:
+  * Manages per-alias files under ~/.ssh/config.d/*.conf
+  * Requires 'autossh' and user systemd (linger recommended).
+  * 'dtun init' enables a persistent user ssh-agent and linger.
+EOF
+  exit 1
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  init) cmd_init;;
+  alias)
+    sub="${1:-}"; shift || true
+    case "$sub" in
+      add)  cmd_alias_add "$@";;
+      list) cmd_alias_list;;
+      show) cmd_alias_show "${1:-}";;
+      rm)   cmd_alias_rm "${1:-}";;
+      *) usage;;
+    esac
+    ;;
+  key)
+    sub="${1:-}"; shift || true
+    case "$sub" in
+      add)  cmd_key_add "${1:-}";;
+      *) usage;;
+    esac
+    ;;
+  start)   cmd_start   "${1:-}";;
+  stop)    cmd_stop    "${1:-}";;
+  enable)  cmd_enable  "${1:-}";;
+  disable) cmd_disable "${1:-}";;
+  status)  cmd_status  "${1:-}";;
+  logs)    cmd_logs    "${1:-}";;
+  *) usage;;
+esac
