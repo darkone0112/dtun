@@ -5,7 +5,7 @@ It manages a persistent `ssh-agent`, reads your per-alias SSH config, loads the 
 
 ---
 
-## ✨ Features
+## Features
 
 - **One-liner tunnels by alias**: `dtun start <alias>`
 - **Per-alias SSH config** in `~/.ssh/config.d/<alias>.conf` (clean and declarative)
@@ -21,7 +21,7 @@ Roadmap includes `key gen`, `key copy`, `ssh`, `test`, multi-forward, ProxyJump,
 
 ---
 
-## 🧱 Requirements
+## Requirements
 
 - Linux with **systemd user services** (most desktop/server distros)
 - **OpenSSH client** (`ssh`, `ssh-agent`, `ssh-add`)
@@ -42,7 +42,7 @@ sudo pacman -S autossh
 
 ---
 
-## 📦 Install dtun
+## Install dtun
 
 Assuming you have the repository cloned locally (recommended layout below), run the installer:
 
@@ -68,15 +68,25 @@ Repo layout (expected by `install.sh`):
 
 dtun/
 ├─ bin/
-│ └─ dtun
+│  └─ dtun
 ├─ systemd/
-│ ├─ ssh-agent.service
-│ └─ tunnel@.service
-
+│  ├─ ssh-agent.service
+│  └─ tunnel@.service
+├─ completion/
+│  ├─ dtun.bash
+│  └─ _dtun
+├─ install.sh
+├─ uninstall.sh
+├─ README.md
+├─ CHANGELOG.md
+├─ CONTRIBUTING.md
+├─ CODE_OF_CONDUCT.md
+├─ .editorconfig
+└─ .gitignore
 
 ---
 
-## ⚡ Quickstart (5 minutes)
+## Quickstart (5 minutes)
 
 1) **Initialize dtun (agent + linger + sanity)**
 ```bash
@@ -140,7 +150,7 @@ dtun logs mydev
 
 ---
 
-## 🧠 Concepts
+## Concepts
 
 - **Alias**: an OpenSSH `Host` stanza kept in `~/.ssh/config.d/<alias>.conf`.  
   It defines: `HostName`, `User`, `IdentityFile`, and at least one `LocalForward`.
@@ -153,7 +163,7 @@ dtun logs mydev
 
 ---
 
-## 🔧 Commands (MVP)
+## Commands (MVP)
 
 ### Bootstrap
 ```bash
@@ -191,7 +201,7 @@ dtun logs    <ALIAS>
 
 ---
 
-## 🧪 Verification Checklist
+## Verification Checklist
 
 ```bash
 # 1) Agent up
@@ -215,7 +225,7 @@ mysql -h 127.0.0.1 -P 3307 -u <DB_USER> -p -e 'SELECT 1;'
 
 ---
 
-## 🧯 Troubleshooting
+## Troubleshooting
 
 **Permission denied (publickey,password)** in `dtun logs <alias>`  
 - Key not loaded or wrong IdentityFile/User in alias.  
@@ -254,7 +264,7 @@ mysql -h 127.0.0.1 -P 3307 -u <DB_USER> -p -e 'SELECT 1;'
 
 ---
 
-## 🔒 Security Notes
+## Security Notes
 
 - `dtun` never stores secrets; it only reads `IdentityFile` paths and calls `ssh-add`.
 - Prefer **key-based auth**; disable password logins on the server when possible.
@@ -263,7 +273,7 @@ mysql -h 127.0.0.1 -P 3307 -u <DB_USER> -p -e 'SELECT 1;'
 
 ---
 
-## 🧹 Uninstall
+## Uninstall
 
 ```bash
 ./uninstall.sh
@@ -272,7 +282,7 @@ mysql -h 127.0.0.1 -P 3307 -u <DB_USER> -p -e 'SELECT 1;'
 
 ---
 
-## 🗺️ Roadmap (short)
+## Roadmap
 
 - `key gen`, `key copy`, `ssh`, `test`
 - Multiple `LocalForward` entries per alias
@@ -284,6 +294,6 @@ mysql -h 127.0.0.1 -P 3307 -u <DB_USER> -p -e 'SELECT 1;'
 
 ---
 
-## 🙌 Credits
+## Credits
 
 Built to save time (and sanity) when working with remote dev DBs and internal services behind SSH.
